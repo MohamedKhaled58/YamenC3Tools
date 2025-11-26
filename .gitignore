@@ -1,41 +1,24 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
+# Build
+bin/
+bin-int/
+obj/
+*.exe
+*.dll
+*.pdb
 *.ilk
 
-# Debugger Files
-*.pdb
+# VS
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.suo
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
+# Premake
+Makefile
+*.make
 
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# debug information files
-*.dwo
+# OS
+.DS_Store
+Thumbs.db
