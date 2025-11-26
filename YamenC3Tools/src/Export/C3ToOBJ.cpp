@@ -1,17 +1,23 @@
-#include "C3Exporter.h"
+#include "C3ToOBJ.h"
 #include "../Core/C3Types.h"
+#include "../Core/C3Model.h"
 #include <fstream>
+#include <DirectXMath.h>
+#include <cmath>
 
-class C3ToOBJ : public C3Exporter {
-public:
-    bool Export(const C3Model& model, const ExportOptions& options) override {
+using namespace DirectX;
+
+bool C3ToOBJ::Export(const C3Model& model, const ExportOptions& options) {
         const auto& meshes = model.GetMeshes();
         if (meshes.empty()) {
             m_lastError = "No meshes to export";
             return false;
         }
 
-        std::string objPath = options.outputPath + ".obj";
+        std::string objPath = options.outputPath;
+        if (objPath.find(".obj") == std::string::npos) {
+            objPath += ".obj";
+        }
         std::ofstream file(objPath);
         if (!file) {
             m_lastError = "Failed to create .obj file";
@@ -78,8 +84,4 @@ public:
 
         file.close();
         return true;
-    }
-
-    const char* GetFormatName() const override { return "Wavefront OBJ"; }
-    const char* GetFileExtension() const override { return ".obj"; }
-};
+}

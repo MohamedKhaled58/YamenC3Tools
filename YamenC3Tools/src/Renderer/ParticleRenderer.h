@@ -43,12 +43,14 @@ private:
     };
 
     std::vector<Particle> m_particles;
+    ID3D11Device* m_device = nullptr;
     ID3D11VertexShader* m_vertexShader = nullptr;
     ID3D11PixelShader* m_pixelShader = nullptr;
     ID3D11InputLayout* m_inputLayout = nullptr;
     ID3D11Buffer* m_constantBuffer = nullptr;
     ID3D11Buffer* m_vertexBuffer = nullptr;
     ID3D11BlendState* m_blendState = nullptr;
+    size_t m_lastVertexCount = 0;
 
     void EmitParticle(const C3Model::ParticleSystem& ps);
 };

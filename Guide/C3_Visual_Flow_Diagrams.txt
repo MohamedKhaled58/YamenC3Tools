@@ -1,0 +1,482 @@
+# C3 Asset Pipeline - Visual Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CONQUER ONLINE 2.0 C3 ENGINE                        │
+│                            ASSET LOADING SYSTEM                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                         STEP 1: INITIALIZATION                            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+   MyDataFileOpen("data.wdf")                MyDnpFileOpen("data.dnp")
+           │                                           │
+           ▼                                           ▼
+   ┌───────────────────┐                     ┌───────────────────┐
+   │  Read WDF Header  │                     │  Read DNP Header  │
+   │ ┌───────────────┐ │                     │ ┌───────────────┐ │
+   │ │ Signature     │ │                     │ │ "DawnPack..." │ │
+   │ │ FileCount     │ │                     │ │ Version: 1000 │ │
+   │ │ IndexOffset   │ │                     │ │ FileAmount    │ │
+   │ └───────────────┘ │                     │ └───────────────┘ │
+   └────────┬──────────┘                     └─────────┬─────────┘
+            │                                          │
+            ▼                                          ▼
+   ┌───────────────────┐                     ┌───────────────────┐
+   │  Allocate Memory  │                     │  Build File Map   │
+   │   for Index[]     │                     │  Hash → Offset    │
+   └────────┬──────────┘                     └─────────┬─────────┘
+            │                                          │
+            ▼                                          ▼
+   ┌───────────────────┐                     ┌───────────────────┐
+   │  Load Index Table │                     │ Store in          │
+   │  ┌─────────────┐  │                     │ g_objDnFile       │
+   │  │ Hash | Off  │  │                     └─────────┬─────────┘
+   │  │ Size | ...  │  │                               │
+   │  └─────────────┘  │                               │
+   │  Binary Sorted!   │                               │
+   └────────┬──────────┘                               │
+            │                                          │
+            └────────────┬─────────────────────────────┘
+                         │
+                         ▼
+           ┌──────────────────────────┐
+           │   Archives Ready to Use  │
+           └──────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                    STEP 2: LOADING AN ASSET                               ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+   User Request: MyDataFileLoad("data/models/warrior.phy", &size)
+           │
+           ▼
+   ┌─────────────────────────────────────────┐
+   │        FILENAME PROCESSING              │
+   │                                         │
+   │  Input: "data/models/warrior.phy"      │
+   │                                         │
+   │  Step 1: Lowercase & normalize slashes │
+   │  ──────> "data/models/warrior.phy"     │
+   │                                         │
+   │  Step 2: Extract pack name             │
+   │  ──────> "data/models"                 │
+   │  ──────> stringtoid() → PACK_ID        │
+   │                                         │
+   │  Step 3: Extract real name             │
+   │  ──────> "data/models/warrior.phy"     │
+   │  ──────> stringtoid() → FILE_ID        │
+   └────────────────┬────────────────────────┘
+                    │
+                    ▼
+   ┌─────────────────────────────────────────┐
+   │      ARCHIVE SEARCH (WDF FIRST)        │
+   │                                         │
+   │  for (i = 0; i < MAXDATAFILE; i++)    │
+   │  {                                      │
+   │      if (_WDF[i].m_Id == PACK_ID)     │
+   │      {                                  │
+   │          // Binary search index        │
+   │          entry = BinarySearch(FILE_ID) │
+   │                                         │
+   │          if (entry found)               │
+   │          {                              │
+   │              fseek(f, entry.offset)    │
+   │              fread(buffer, entry.size) │
+   │              RETURN buffer             │
+   │          }                              │
+   │      }                                  │
+   │  }                                      │
+   └────────────────┬────────────────────────┘
+                    │
+                    │ Not found in WDF?
+                    │
+                    ▼
+   ┌─────────────────────────────────────────┐
+   │      FALLBACK TO DNP ARCHIVE           │
+   │                                         │
+   │  map.find(FILE_ID)                     │
+   │      ↓                                  │
+   │  if (found)                             │
+   │  {                                      │
+   │      fseek(fp, offset)                 │
+   │      fread(buffer, size)               │
+   │      RETURN buffer                     │
+   │  }                                      │
+   └────────────────┬────────────────────────┘
+                    │
+                    │ Still not found?
+                    │
+                    ▼
+   ┌─────────────────────────────────────────┐
+   │      FALLBACK TO FILESYSTEM            │
+   │                                         │
+   │  fopen("data/models/warrior.phy")      │
+   │      ↓                                  │
+   │  if (success)                           │
+   │  {                                      │
+   │      fread(buffer, filesize)           │
+   │      RETURN buffer                     │
+   │  }                                      │
+   │  else                                   │
+   │  {                                      │
+   │      RETURN NULL (ERROR)               │
+   │  }                                      │
+   └────────────────┬────────────────────────┘
+                    │
+                    ▼
+              Raw Data Buffer
+
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                STEP 3: FORMAT-SPECIFIC PARSING                            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+   Raw Data Buffer → Format Detection
+           │
+           ├──────────────┬──────────────┬──────────────┬──────────────┐
+           │              │              │              │              │
+           ▼              ▼              ▼              ▼              ▼
+    ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+    │   .PHY   │   │   .ANI   │   │  .SHAPE  │   │ .SPRITE  │   │ .PTCL    │
+    │  Model   │   │Animation │   │  Effect  │   │  2D Tex  │   │Particles │
+    └────┬─────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘
+         │              │              │              │              │
+         ▼              ▼              ▼              ▼              ▼
+    Phy_Load()    CAni::Create()  Shape_Load()   Sprite_Load()  Ptcl_Load()
+
+
+═══════════════════════════════════════════════════════════════════════════
+                          PHY FILE STRUCTURE
+═══════════════════════════════════════════════════════════════════════════
+
+File Structure (Chunk-based):
+┌────────────────────────────────────────────────────────────────────┐
+│                         PHY FILE                                   │
+├────────────────────────────────────────────────────────────────────┤
+│  Chunk 1: PHYS (Physics/Geometry)                                 │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ ChunkHeader: { 'P','H','Y','S', size }                      │ │
+│  │ ┌──────────────────────────────────────────────────────────┐│ │
+│  │ │ BoneCount: 32                                            ││ │
+│  │ │ MeshCount: 5                                             ││ │
+│  │ │ VertexCount: 2048                                        ││ │
+│  │ │ TriangleCount: 1536                                      ││ │
+│  │ │                                                           ││ │
+│  │ │ Mesh[0]:                                                 ││ │
+│  │ │   Name: "Body"                                           ││ │
+│  │ │   VertexCount: 512                                       ││ │
+│  │ │   Positions[512]: [ (x,y,z), ... ]                      ││ │
+│  │ │   Normals[512]: [ (x,y,z), ... ]                        ││ │
+│  │ │   UVs[512]: [ (u,v), ... ]                              ││ │
+│  │ │   BoneIndices[512]: [ (i0,i1,i2,i3), ... ]              ││ │
+│  │ │   BoneWeights[512]: [ (w0,w1,w2,w3), ... ]              ││ │
+│  │ │   Indices[768]: [ tri0, tri1, tri2, ... ]               ││ │
+│  │ │                                                           ││ │
+│  │ │ Mesh[1]: "Head" ...                                      ││ │
+│  │ │ Mesh[2]: "LeftArm" ...                                   ││ │
+│  │ │ Mesh[3]: "RightArm" ...                                  ││ │
+│  │ │ Mesh[4]: "Legs" ...                                      ││ │
+│  │ │                                                           ││ │
+│  │ │ Materials[5]: { ambient, diffuse, specular, texture }   ││ │
+│  │ └──────────────────────────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────────────────────────┘ │
+├────────────────────────────────────────────────────────────────────┤
+│  Chunk 2: MOTI (Motion/Animation)                                 │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ ChunkHeader: { 'M','O','T','I', size }                      │ │
+│  │ ┌──────────────────────────────────────────────────────────┐│ │
+│  │ │ BoneCount: 32                                            ││ │
+│  │ │ FrameCount: 30                                           ││ │
+│  │ │                                                           ││ │
+│  │ │ Format: "XKEY" (compressed)                             ││ │
+│  │ │   KeyFrameCount: 30                                      ││ │
+│  │ │                                                           ││ │
+│  │ │   KeyFrame[0]:                                           ││ │
+│  │ │     Pos: 0 (frame number, WORD=2 bytes)                 ││ │
+│  │ │     Matrices[32]: TIDY_MATRIX (48 bytes each)           ││ │
+│  │ │       [11 12 13]  [21 22 23]  [31 32 33]                ││ │
+│  │ │       Translation: [41 42 43]                            ││ │
+│  │ │                                                           ││ │
+│  │ │   KeyFrame[1]: ...                                       ││ │
+│  │ │   KeyFrame[2]: ...                                       ││ │
+│  │ │   ...                                                     ││ │
+│  │ │                                                           ││ │
+│  │ │ MorphCount: 10                                           ││ │
+│  │ │ MorphWeights[10 * 30]: [ w0, w1, ... ]                  ││ │
+│  │ └──────────────────────────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────────────────────────┘ │
+├────────────────────────────────────────────────────────────────────┤
+│  (More chunks if needed: SKIN, COLL, etc.)                        │
+└────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════
+                          ANI FILE STRUCTURE
+═══════════════════════════════════════════════════════════════════════════
+
+File: warrior_walk.ini (Text Format)
+┌────────────────────────────────────────────────────────────────────┐
+│ [walk]                                                             │
+│ FrameAmount=8                                                      │
+│ Frame0=texture/warrior/walk_0.dds                                  │
+│ Frame1=texture/warrior/walk_1.dds                                  │
+│ Frame2=texture/warrior/walk_2.dds                                  │
+│ Frame3=texture/warrior/walk_3.dds                                  │
+│ Frame4=texture/warrior/walk_4.dds                                  │
+│ Frame5=texture/warrior/walk_5.dds                                  │
+│ Frame6=texture/warrior/walk_6.dds                                  │
+│ Frame7=texture/warrior/walk_7.dds                                  │
+│                                                                     │
+│ [attack]                                                            │
+│ FrameAmount=10                                                     │
+│ Frame0=texture/warrior/attack_0.dds                                │
+│ Frame1=texture/warrior/attack_1.dds                                │
+│ ...                                                                 │
+└────────────────────────────────────────────────────────────────────┘
+
+Loading Process:
+    1. Parse INI file
+    2. Find section [walk]
+    3. Read FrameAmount=8
+    4. For i=0 to 7:
+         Load texture/warrior/walk_i.dds
+         Create CMyBitmap
+         Store in m_pbmpFrame[i]
+    5. Ready to animate!
+
+Runtime Usage:
+    CAni anim;
+    anim.Create("warrior_walk.ini", "walk");
+    
+    // Animation loop
+    for (frame = 0; frame < anim.GetFrameAmount(); frame++) {
+        CMyBitmap* bitmap = anim.GetFrame(frame);
+        Render(bitmap, x, y);
+        Sleep(frameDelay);
+    }
+
+
+═══════════════════════════════════════════════════════════════════════════
+                         SHAPE FILE STRUCTURE
+═══════════════════════════════════════════════════════════════════════════
+
+File: sword_trail.shp
+┌────────────────────────────────────────────────────────────────────┐
+│ ChunkHeader: { 'S','H','A','P', size }                            │
+│                                                                     │
+│ NameLength: 12                                                     │
+│ Name: "SwordTrail" (12 bytes)                                      │
+│                                                                     │
+│ LineCount: 2                                                       │
+│                                                                     │
+│ Line[0]:                                                            │
+│   VecCount: 10                                                     │
+│   Vertices[10]:                                                    │
+│     (0.0, 0.0, 0.0)     ← Sword hilt                              │
+│     (0.1, 0.0, 0.2)                                                │
+│     (0.2, 0.0, 0.4)                                                │
+│     ...                                                             │
+│     (1.0, 0.0, 2.0)     ← Sword tip                               │
+│                                                                     │
+│ Line[1]:                                                            │
+│   VecCount: 10                                                     │
+│   Vertices[10]: (parallel line for trail width)                   │
+│     (-0.05, 0.0, 0.0)                                              │
+│     ...                                                             │
+│                                                                     │
+│ TexNameLength: 24                                                  │
+│ TexName: "texture/trail_glow.dds" (24 bytes)                      │
+│                                                                     │
+│ SegmentCount: 20  (trail history length)                          │
+└────────────────────────────────────────────────────────────────────┘
+
+Runtime: Creates ribbon mesh that follows sword movement!
+
+
+═══════════════════════════════════════════════════════════════════════════
+                         HASH ALGORITHM DETAIL
+═══════════════════════════════════════════════════════════════════════════
+
+Function: stringtoid(const char* str)
+
+Magic Constants:
+    x0 = 0x37A8470E
+    y0 = 0x7758B42B
+    w  = 0x267B0B11
+    a  = 0x2040801
+    b  = 0x804021
+    c  = 0xBFEF7FDF
+    d  = 0x7DFEFBFF
+    v  = 0xF4FA8928
+    
+    Sentinels: 0x9BE74448, 0x66F42C48
+
+Algorithm:
+    1. Copy string to buffer (max 256 chars)
+    2. Append two sentinel values
+    3. Initialize v, esi, edi
+    4. Loop for each DWORD in buffer:
+         a. w = 0x267B0B11
+         b. v = ROL(v, 1)
+         c. w ^= v
+         d. esi ^= buffer[i]
+         e. edi ^= buffer[i]
+         f. Compute: esi = esi * ((w + edi) | a & c)
+         g. Compute: edi = edi * ((w + esi) | b & d)
+    5. Final: v = esi ^ edi
+    6. Return v
+
+Example:
+    Input: "data/models/warrior.phy"
+    Output: 0xA3B7C8D9 (hypothetical)
+
+This hash is:
+    - Deterministic (same input → same output)
+    - Fast (simple operations)
+    - Good distribution (minimizes collisions)
+    - Case-insensitive (lowercased before hashing)
+    - Platform-specific (uses x86 assembly)
+
+
+═══════════════════════════════════════════════════════════════════════════
+                    MEMORY & PERFORMANCE OPTIMIZATION
+═══════════════════════════════════════════════════════════════════════════
+
+WDF Archive Optimization:
+    ┌─────────────────────────────────────────────┐
+    │   WDF File (100 MB)                         │
+    │                                             │
+    │   Header (8 bytes)                          │
+    │   [File Data 1] [File Data 2] ...          │
+    │   [File Data N]                             │
+    │                                             │
+    │   Index Table (at end):                     │
+    │   ┌──────────────────────────────┐          │
+    │   │ Sorted by Hash ID!           │          │
+    │   │ ─────────────────────         │          │
+    │   │ 0x00001234 | 1024 | 0x1000   │          │
+    │   │ 0x00005678 | 2048 | 0x1400   │          │
+    │   │ 0x0000ABCD | 512  | 0x1C00   │          │
+    │   │ ...                           │          │
+    │   └──────────────────────────────┘          │
+    └─────────────────────────────────────────────┘
+
+Binary Search Performance:
+    Files in archive: 10,000
+    Linear search: O(n) = 10,000 comparisons worst case
+    Binary search: O(log n) = ~14 comparisons worst case
+    
+    Speedup: 714x faster!
+
+DNP Optimization:
+    Uses std::map<uint32_t, FileIndexInfo*>
+    - Hash table lookup: O(1) average
+    - Even faster than binary search!
+    
+    BUT: Requires more memory (map overhead)
+
+Half-Frame ANI:
+    Full animation: 20 frames × 512 KB = 10.24 MB
+    Half-frame:    10 frames × 512 KB =  5.12 MB (reuse odd frames)
+    
+    Memory saved: 50%!
+    Visual quality: Minimal loss at 30 FPS
+
+
+═══════════════════════════════════════════════════════════════════════════
+                         COMPLETE LOADING EXAMPLE
+═══════════════════════════════════════════════════════════════════════════
+
+Game Startup:
+    ┌──────────────────────────────────────────────────────────────┐
+    │ 1. Initialize Engine                                         │
+    │    C3_Init()                                                 │
+    │                                                              │
+    │ 2. Open Archives                                             │
+    │    MyDataFileOpen("data/models.wdf")     → _WDF[0]          │
+    │    MyDataFileOpen("data/textures.wdf")   → _WDF[1]          │
+    │    MyDataFileOpen("data/animations.wdf") → _WDF[2]          │
+    │    MyDnpFileOpen("data/sounds.dnp")                          │
+    │                                                              │
+    │ 3. Load Character                                            │
+    │    phy = Phy_Load("data/models/warrior.phy")                │
+    │      ├─ Hash: "data/models" → 0x12345678                    │
+    │      ├─ Hash: "warrior.phy" → 0xABCDEF00                    │
+    │      ├─ Find in _WDF[0]                                     │
+    │      ├─ Read chunks: PHYS, MOTI                             │
+    │      └─ Build mesh + skeleton                               │
+    │                                                              │
+    │ 4. Load Textures                                             │
+    │    tex = Texture_Load("texture/warrior_body.dds")           │
+    │      ├─ Hash → 0x11223344                                   │
+    │      ├─ Find in _WDF[1]                                     │
+    │      ├─ D3DXCreateTextureFromFileInMemory()                 │
+    │      └─ Cache in texture manager                            │
+    │                                                              │
+    │ 5. Load Animation                                            │
+    │    ani = CAni::Create("warrior_anims.ini", "walk")          │
+    │      ├─ Parse INI file                                      │
+    │      ├─ Load 8 frame textures                               │
+    │      └─ Store in m_pbmpFrame[]                              │
+    │                                                              │
+    │ 6. Load Effect                                               │
+    │    trail = Shape_Load("sword_trail.shp")                    │
+    │      ├─ Load line geometry                                  │
+    │      ├─ Load trail texture                                  │
+    │      └─ Setup dynamic vertex buffer                         │
+    │                                                              │
+    │ 7. Ready to Render!                                          │
+    │    while (running) {                                         │
+    │        phy->Update(deltaTime);                              │
+    │        phy->Render(camera);                                 │
+    │        ani->DrawFrame(currentFrame);                        │
+    │        trail->Draw(swordMatrix);                            │
+    │    }                                                         │
+    └──────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════
+                           ERROR HANDLING
+═══════════════════════════════════════════════════════════════════════════
+
+File Not Found Chain:
+    MyDataFileLoad("missing_file.phy")
+        ↓
+    Try WDF archives (all open ones)
+        ↓ Not found
+    Try DNP archives
+        ↓ Not found
+    Try filesystem
+        ↓ Not found
+    Return NULL + size=0
+        ↓
+    Caller handles:
+        if (!data) {
+            ErrorOut("Failed to load missing_file.phy");
+            UseDefaultAsset();
+        }
+
+Common Issues:
+    1. Wrong hash algorithm → Files never found
+    2. Corrupted archive → Index corrupted, all lookups fail
+    3. Missing texture → Model loads but renders white
+    4. Wrong animation format → Crash in parser
+    5. Endianness mismatch → All numbers wrong (not an issue on x86)
+
+
+═══════════════════════════════════════════════════════════════════════════
+
+END OF VISUAL DOCUMENTATION
+
+For implementation in Yamen Engine:
+    1. Follow this exact structure
+    2. Port hash algorithm carefully (x86 assembly → C++)
+    3. Test with original Conquer files
+    4. Add modern features (async loading, streaming)
+    5. Maintain backward compatibility
+
+═══════════════════════════════════════════════════════════════════════════
+```

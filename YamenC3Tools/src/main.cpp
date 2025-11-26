@@ -6,8 +6,13 @@
 #include "Renderer/Camera.h"
 #include "UI/ImGuiManager.h"
 #include "Utils/FileDialog.h"
+#include "Export/C3Writer.h"
+#include "Export/C3ToGLTF.h"
+#include "Export/C3ToOBJ.h"
+#include "Import/GLTFToC3.h"
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
+#include <filesystem>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -33,12 +38,23 @@ struct AppState {
 
     std::string loadedFilePath;
     std::string statusMessage;
+    
+    // Import/Export
+    std::unique_ptr<C3Writer> c3Writer;
+    std::unique_ptr<C3ToGLTF> gltfExporter;
+    std::unique_ptr<C3ToOBJ> objExporter;
+    std::unique_ptr<GLTFToC3> gltfImporter;
 };
 
 AppState g_appState;
 
 void RenderUI();
 void LoadC3File();
+void MergeC3File();
+void ExportC3File();
+void ExportToGLTF();
+void ExportToOBJ();
+void ImportFromGLTF();
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
@@ -93,10 +109,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             int dy = currentPos.y - g_appState.lastMousePos.y;
 
             if (g_appState.mouseLeftDown && g_appState.camera) {
-                g_appState.camera->OrbitTarget(dx * 0.005f, -dy * 0.005f);
+                g_appState.camera->OrbitTarget(static_cast<float>(dx) * 0.005f, static_cast<float>(-dy) * 0.005f);
             }
             if (g_appState.mouseMiddleDown && g_appState.camera) {
-                g_appState.camera->Pan(-dx, dy);
+                g_appState.camera->Pan(static_cast<float>(-dx), static_cast<float>(dy));
             }
 
             g_appState.lastMousePos = currentPos;
@@ -107,7 +123,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (!g_appState.imgui || !g_appState.imgui->WantCaptureMouse()) {
             if (g_appState.camera) {
                 int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-                g_appState.camera->Zoom(delta * 0.005f);
+                g_appState.camera->Zoom(static_cast<float>(delta) * 0.005f);
             }
         }
         return 0;
@@ -119,6 +135,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         // Ctrl+O shortcut
         else if (wParam == 'O' && (GetKeyState(VK_CONTROL) & 0x8000)) {
             LoadC3File();
+        }
+        // Ctrl+M shortcut for merge
+        else if (wParam == 'M' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            MergeC3File();
         }
         return 0;
 
@@ -175,6 +195,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
         MessageBoxA(hwnd, "Failed to initialize ImGui!", "Error", MB_OK | MB_ICONERROR);
         return 1;
     }
+
+    // Initialize import/export
+    g_appState.c3Writer = std::make_unique<C3Writer>();
+    g_appState.gltfExporter = std::make_unique<C3ToGLTF>();
+    g_appState.objExporter = std::make_unique<C3ToOBJ>();
+    g_appState.gltfImporter = std::make_unique<GLTFToC3>();
 
     g_appState.statusMessage = "Ready. Press Ctrl+O or use File menu to load C3 files.";
 
@@ -277,6 +303,28 @@ void RenderUI() {
             if (ImGui::MenuItem("Open C3 File...", "Ctrl+O")) {
                 LoadC3File();
             }
+            if (ImGui::MenuItem("Merge C3 File...", "Ctrl+M")) {
+                MergeC3File();
+            }
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("Export to C3...")) {
+                    ExportC3File();
+                }
+                if (ImGui::MenuItem("Export to GLTF...")) {
+                    ExportToGLTF();
+                }
+                if (ImGui::MenuItem("Export to OBJ...")) {
+                    ExportToOBJ();
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Import")) {
+                if (ImGui::MenuItem("Import from GLTF...")) {
+                    ImportFromGLTF();
+                }
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "ESC")) {
                 PostQuitMessage(0);
@@ -370,7 +418,34 @@ void RenderUI() {
 
     // Animation Section
     if (ImGui::CollapsingHeader("Animation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (g_appState.modelLoaded) {
+        if (g_appState.modelLoaded && g_appState.model) {
+            const auto& anims = g_appState.model->GetAnimations();
+            if (!anims.empty()) {
+                static int selectedAnim = 0;
+                if (ImGui::Combo("Animation", &selectedAnim, [](void* data, int idx, const char** out_text) {
+                    const auto* anims = static_cast<const std::vector<C3Model::Animation>*>(data);
+                    if (idx >= 0 && idx < anims->size()) {
+                        *out_text = (*anims)[idx].name.c_str();
+                        return true;
+                    }
+                    return false;
+                }, const_cast<void*>(static_cast<const void*>(&anims)), anims.size())) {
+                    g_appState.animationTime = 0.0f;
+                }
+                
+                if (selectedAnim < anims.size()) {
+                    const auto& anim = anims[selectedAnim];
+                    ImGui::Text("Frames: %u", anim.frameCount);
+                    ImGui::Text("Keyframes: %u", anim.keyFrameCount);
+                    ImGui::Text("Bones: %u", anim.boneCount);
+                    
+                    uint32_t currentFrame = static_cast<uint32_t>(g_appState.animationTime) % anim.frameCount;
+                    if (ImGui::SliderInt("Frame", reinterpret_cast<int*>(&currentFrame), 0, anim.frameCount - 1)) {
+                        g_appState.model->SetAnimationFrame(selectedAnim, currentFrame);
+                    }
+                }
+            }
+            
             if (ImGui::Button(g_appState.playAnimation ? "Pause" : "Play")) {
                 g_appState.playAnimation = !g_appState.playAnimation;
             }
@@ -414,4 +489,146 @@ void RenderUI() {
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar);
     ImGui::Text("%s", g_appState.statusMessage.c_str());
     ImGui::End();
+}
+
+void MergeC3File() {
+    if (!g_appState.model) {
+        MessageBoxA(nullptr, "Please load a C3 file first before merging!", "No Model", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::string path;
+    if (FileDialog::OpenFile("C3 Files (*.c3)\0*.c3\0All Files (*.*)\0*.*\0", path)) {
+        if (g_appState.model->MergeFromFile(path)) {
+            // Reload model to GPU
+            if (g_appState.renderer->LoadModel(*g_appState.model)) {
+                size_t lastSlash = path.find_last_of("\\/");
+                std::string filename = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+                g_appState.statusMessage = "Merged: " + filename;
+            } else {
+                g_appState.statusMessage = "ERROR: Failed to upload merged model to GPU";
+            }
+        } else {
+            g_appState.statusMessage = "ERROR: " + g_appState.model->GetError();
+            MessageBoxA(nullptr, g_appState.model->GetError().c_str(), "Merge Error", MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
+void ExportC3File() {
+    if (!g_appState.model || !g_appState.modelLoaded) {
+        MessageBoxA(nullptr, "No model loaded to export!", "Export Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::string path;
+    if (FileDialog::SaveFile("C3 Files (*.c3)\0*.c3\0All Files (*.*)\0*.*\0", "c3", path)) {
+        if (!path.empty()) {
+            if (path.find(".c3") == std::string::npos) {
+                path += ".c3";
+            }
+
+            if (g_appState.c3Writer->Write(*g_appState.model, path)) {
+                g_appState.statusMessage = "Exported to: " + path;
+            } else {
+                g_appState.statusMessage = "ERROR: " + g_appState.c3Writer->GetLastError();
+                MessageBoxA(nullptr, g_appState.c3Writer->GetLastError().c_str(), "Export Error", MB_OK | MB_ICONERROR);
+            }
+        }
+    }
+}
+
+void ExportToGLTF() {
+    if (!g_appState.model || !g_appState.modelLoaded) {
+        MessageBoxA(nullptr, "No model loaded to export!", "Export Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::string path;
+    if (FileDialog::SaveFile("GLTF Files (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0", "gltf", path)) {
+        if (!path.empty()) {
+            if (path.find(".gltf") == std::string::npos) {
+                path += ".gltf";
+            }
+
+            C3ToGLTF::ExportOptions options;
+            options.outputPath = path;
+            options.exportMorphTargets = true;
+            options.exportVertexColors = true;
+
+            if (g_appState.gltfExporter->Export(*g_appState.model, options)) {
+                g_appState.statusMessage = "Exported GLTF to: " + path;
+            } else {
+                g_appState.statusMessage = "ERROR: " + g_appState.gltfExporter->GetLastError();
+                MessageBoxA(nullptr, g_appState.gltfExporter->GetLastError().c_str(), "Export Error", MB_OK | MB_ICONERROR);
+            }
+        }
+    }
+}
+
+void ExportToOBJ() {
+    if (!g_appState.model || !g_appState.modelLoaded) {
+        MessageBoxA(nullptr, "No model loaded to export!", "Export Error", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    std::string path;
+    if (FileDialog::SaveFile("OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0", "obj", path)) {
+        if (!path.empty()) {
+            if (path.find(".obj") == std::string::npos) {
+                path += ".obj";
+            }
+
+            C3Exporter::ExportOptions options;
+            options.outputPath = path;
+            options.exportMorphTargets = false;
+            options.exportVertexColors = false;
+
+            if (g_appState.objExporter->Export(*g_appState.model, options)) {
+                g_appState.statusMessage = "Exported OBJ to: " + path;
+            } else {
+                g_appState.statusMessage = "ERROR: " + g_appState.objExporter->GetLastError();
+                MessageBoxA(nullptr, g_appState.objExporter->GetLastError().c_str(), "Export Error", MB_OK | MB_ICONERROR);
+            }
+        }
+    }
+}
+
+void ImportFromGLTF() {
+    std::string path;
+    if (FileDialog::OpenFile("GLTF Files (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0", path)) {
+        g_appState.model = std::make_unique<C3Model>();
+
+        GLTFToC3::ImportOptions options;
+        options.inputPath = path;
+        options.preserveMorphTargets = true;
+        options.importVertexColors = true;
+
+        if (g_appState.gltfImporter->Import(path, *g_appState.model, options)) {
+            if (g_appState.renderer->LoadModel(*g_appState.model)) {
+                g_appState.modelLoaded = true;
+                g_appState.loadedFilePath = path;
+
+                size_t lastSlash = path.find_last_of("\\/");
+                std::string filename = (lastSlash != std::string::npos) ? path.substr(lastSlash + 1) : path;
+                g_appState.statusMessage = "Imported: " + filename;
+
+                // Reset animation state
+                g_appState.playAnimation = false;
+                g_appState.animationTime = 0.0f;
+                g_appState.morphWeights[0] = 1.0f;
+                g_appState.morphWeights[1] = 0.0f;
+                g_appState.morphWeights[2] = 0.0f;
+                g_appState.morphWeights[3] = 0.0f;
+
+                g_appState.renderer->SetMorphWeights(1.0f, 0.0f, 0.0f, 0.0f);
+            } else {
+                g_appState.statusMessage = "ERROR: Failed to upload imported model to GPU";
+                MessageBoxA(nullptr, "Failed to create GPU buffers for imported model!", "Renderer Error", MB_OK | MB_ICONERROR);
+            }
+        } else {
+            g_appState.statusMessage = "ERROR: " + g_appState.gltfImporter->GetLastError();
+            MessageBoxA(nullptr, g_appState.gltfImporter->GetLastError().c_str(), "Import Error", MB_OK | MB_ICONERROR);
+        }
+    }
 }

@@ -17,6 +17,7 @@ public:
     virtual bool Export(const C3Model& model, const ExportOptions& options) = 0;
     virtual const char* GetFormatName() const = 0;
     virtual const char* GetFileExtension() const = 0;
+    const std::string& GetLastError() const { return m_lastError; }
 
 protected:
     std::string m_lastError;

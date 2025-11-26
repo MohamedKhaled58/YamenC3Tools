@@ -34,4 +34,8 @@ private:
         float time;
         float padding[3];
     };
+    
+    ID3D11Device* m_device = nullptr;
+    ID3D11Buffer* m_vertexBuffer = nullptr;
+    size_t m_lastVertexCount = 0;
 };

@@ -38,6 +38,11 @@ struct C3KeyFrame {
     float value;
 };
 
+struct ChunkHeader {
+    char byChunkID[4];
+    uint32_t dwChunkSize;
+};
+
 inline const char* ChunkTypeToString(C3ChunkType type) {
     switch (type) {
     case C3ChunkType::PHY: return "PHY";

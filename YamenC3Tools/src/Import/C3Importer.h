@@ -16,6 +16,7 @@ public:
     virtual bool Import(const std::string& path, C3Model& outModel, const ImportOptions& options) = 0;
     virtual const char* GetFormatName() const = 0;
     virtual const char* GetFileExtension() const = 0;
+    const std::string& GetLastError() const { return m_lastError; }
 
 protected:
     std::string m_lastError;

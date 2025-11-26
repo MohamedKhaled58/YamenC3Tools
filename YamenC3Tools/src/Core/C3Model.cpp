@@ -2,6 +2,10 @@
 #include <fstream>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+using namespace DirectX;
 
 bool C3Model::LoadFromFile(const std::string& path) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -26,63 +30,72 @@ bool C3Model::LoadFromMemory(const std::vector<uint8_t>& data) {
         return false;
     }
 
+    size_t offset = 0;
+
+    // Read C3 header (exactly like the reference code)
     C3FileHeader header;
     memcpy(&header, data.data(), sizeof(C3FileHeader));
+    offset += sizeof(C3FileHeader);
 
     if (strncmp(header.magic, "MAXFILE C3", 10) != 0) {
-        m_error = "Invalid C3 file header";
+        m_error = "Invalid C3 magic header";
         return false;
     }
 
-    // Detect chunk type
-    std::string typeStr(header.physicsType, 4);
-    if (typeStr == "PHY ") m_type = C3ChunkType::PHY;
-    else if (typeStr == "PHY3") m_type = C3ChunkType::PHY3;
-    else if (typeStr == "PHY4") m_type = C3ChunkType::PHY4;
-    else if (typeStr == "SMOT") m_type = C3ChunkType::SMOT;
-    else if (typeStr == "SHAP") m_type = C3ChunkType::SHAP;
-    else if (typeStr == "PTCL") m_type = C3ChunkType::PTCL;
+    // Get chunk type from header (NOT from a chunk ID!)
+    std::string chunkType(header.physicsType, 4);
+
+    // Read chunk size (at offset 20, NO chunk ID!)
+    if (offset + 4 > data.size()) {
+        m_error = "No chunk size";
+        return false;
+    }
+
+    uint32_t chunkSize = *reinterpret_cast<const uint32_t*>(data.data() + offset);
+    offset += 4;
+
+    if (chunkSize == 0 || offset + chunkSize > data.size()) {
+        m_error = "Invalid chunk size: " + std::to_string(chunkSize);
+        return false;
+    }
+
+    // Parse PHY chunks only (like reference code)
+    if (chunkType == "PHY4" || chunkType == "PHY " || chunkType == "PHY3") {
+        if (!ParsePHYS(data.data(), offset, chunkSize)) {
+            return false;
+        }
+        m_type = (chunkType == "PHY3") ? C3ChunkType::PHY3 : 
+                 (chunkType == "PHY4") ? C3ChunkType::PHY4 : C3ChunkType::PHY;
+    }
+    else if (chunkType == "MOTI") {
+        if (!ParseMOTI(data.data(), offset, chunkSize)) {
+            return false;
+        }
+    }
+    else if (chunkType == "SMOT" || chunkType == "SHAP") {
+        if (!ParseSMOT(data.data(), offset, chunkSize)) {
+            return false;
+        }
+        m_type = C3ChunkType::SHAP;
+    }
+    else if (chunkType == "PTCL") {
+        if (!ParsePTCL(data.data(), offset, chunkSize)) {
+            return false;
+        }
+        m_type = C3ChunkType::PTCL;
+    }
     else {
-        m_error = "Unknown chunk type: " + typeStr;
+        m_error = "Not a supported file type (type: " + chunkType + ")";
         return false;
     }
 
-    // Read chunk size (at offset 20)
-    if (data.size() < 24) {
-        m_error = "No chunk size found";
+    if (m_meshes.empty() && m_shapes.empty() && m_particles.empty()) {
+        m_error = "No data loaded from file";
         return false;
     }
 
-    uint32_t chunkSize;
-    memcpy(&chunkSize, data.data() + 20, 4);
-
-    size_t offset = 24; // After header + size
-
-    // Parse based on type
-    bool success = false;
-    switch (m_type) {
-    case C3ChunkType::PHY:
-    case C3ChunkType::PHY3:
-    case C3ChunkType::PHY4:
-        success = ParsePHY(data.data(), offset, chunkSize);
-        break;
-    case C3ChunkType::SMOT:
-    case C3ChunkType::SHAP:
-        success = ParseSMOT(data.data(), offset, chunkSize);
-        break;
-    case C3ChunkType::PTCL:
-        success = ParsePTCL(data.data(), offset, chunkSize);
-        break;
-    default:
-        m_error = "Parser not implemented for this type";
-        return false;
-    }
-
-    if (success) {
-        CalculateBounds();
-    }
-
-    return success;
+    CalculateBounds();
+    return true;
 }
 
 bool C3Model::ParsePHY(const uint8_t* data, size_t offset, size_t chunkSize) {
@@ -96,8 +109,9 @@ bool C3Model::ParsePHY(const uint8_t* data, size_t offset, size_t chunkSize) {
     }
 
     uint32_t nameLen = *reinterpret_cast<const uint32_t*>(data + offset);
-    if (nameLen > 0 && nameLen < 256 && offset + 4 + nameLen <= chunkEnd) {
-        offset += 4;
+    offset += 4; // Always advance past nameLen field
+    
+    if (nameLen > 0 && nameLen < 256 && offset + nameLen <= chunkEnd) {
         part.name = std::string(reinterpret_cast<const char*>(data + offset), nameLen);
         offset += nameLen;
     }
@@ -106,12 +120,18 @@ bool C3Model::ParsePHY(const uint8_t* data, size_t offset, size_t chunkSize) {
     }
 
     // Read blend count
-    if (offset + 4 > chunkEnd) return false;
+    if (offset + 4 > chunkEnd) {
+        m_error = "Unexpected end of chunk while reading blend count";
+        return false;
+    }
     part.blendCount = *reinterpret_cast<const uint32_t*>(data + offset);
     offset += 4;
 
     // Read vertex counts
-    if (offset + 8 > chunkEnd) return false;
+    if (offset + 8 > chunkEnd) {
+        m_error = "Unexpected end of chunk while reading vertex counts";
+        return false;
+    }
     uint32_t normalVertCount = *reinterpret_cast<const uint32_t*>(data + offset);
     offset += 4;
     uint32_t alphaVertCount = *reinterpret_cast<const uint32_t*>(data + offset);
@@ -167,7 +187,10 @@ bool C3Model::ParsePHY(const uint8_t* data, size_t offset, size_t chunkSize) {
     }
 
     // Read triangle counts
-    if (offset + 8 > chunkEnd) return false;
+    if (offset + 8 > chunkEnd) {
+        m_error = "Unexpected end of chunk while reading triangle counts";
+        return false;
+    }
     uint32_t normalTriCount = *reinterpret_cast<const uint32_t*>(data + offset);
     offset += 4;
     uint32_t alphaTriCount = *reinterpret_cast<const uint32_t*>(data + offset);
@@ -347,6 +370,290 @@ bool C3Model::ParsePTCL(const uint8_t* data, size_t offset, size_t chunkSize) {
 
     m_particles.push_back(std::move(ps));
     return true;
+}
+
+bool C3Model::ParseMOTI(const uint8_t* data, size_t offset, size_t chunkSize) {
+    size_t chunkEnd = offset + chunkSize;
+    Animation anim;
+    anim.name = "motion";
+    
+    // Read bone count
+    if (offset + 4 > chunkEnd) return false;
+    anim.boneCount = *reinterpret_cast<const uint32_t*>(data + offset);
+    offset += 4;
+    
+    // Read frame count
+    if (offset + 4 > chunkEnd) return false;
+    anim.frameCount = *reinterpret_cast<const uint32_t*>(data + offset);
+    offset += 4;
+    
+    // Check for keyframe format
+    if (offset + 4 > chunkEnd) return false;
+    char kf[4];
+    memcpy(kf, data + offset, 4);
+    offset += 4;
+    
+    bool isKKEY = (kf[0] == 'K' && kf[1] == 'K' && kf[2] == 'E' && kf[3] == 'Y');
+    bool isXKEY = (kf[0] == 'X' && kf[1] == 'K' && kf[2] == 'E' && kf[3] == 'Y');
+    bool isZKEY = (kf[0] == 'Z' && kf[1] == 'K' && kf[2] == 'E' && kf[3] == 'Y');
+    
+    if (isKKEY || isXKEY || isZKEY) {
+        // Read keyframe count
+        if (offset + 4 > chunkEnd) return false;
+        anim.keyFrameCount = *reinterpret_cast<const uint32_t*>(data + offset);
+        offset += 4;
+        
+        anim.keyFrames.resize(anim.keyFrameCount);
+        
+        for (uint32_t k = 0; k < anim.keyFrameCount; k++) {
+            Animation::KeyFrame& kf = anim.keyFrames[k];
+            kf.boneMatrices.resize(anim.boneCount);
+            
+            if (isKKEY) {
+                // Full 4x4 matrices (64 bytes per bone)
+                if (offset + 4 > chunkEnd) return false;
+                kf.frame = *reinterpret_cast<const uint32_t*>(data + offset);
+                offset += 4;
+                
+                for (uint32_t b = 0; b < anim.boneCount; b++) {
+                    if (offset + 64 > chunkEnd) return false;
+                    memcpy(&kf.boneMatrices[b], data + offset, 64);
+                    offset += 64;
+                }
+            }
+            else if (isXKEY) {
+                // Compressed 3x4 matrices (48 bytes per bone)
+                if (offset + 2 > chunkEnd) return false;
+                uint16_t wPos;
+                memcpy(&wPos, data + offset, 2);
+                kf.frame = wPos;
+                offset += 2;
+                
+                for (uint32_t b = 0; b < anim.boneCount; b++) {
+                    if (offset + 48 > chunkEnd) return false;
+                    // Read TIDY_MATRIX (3x4)
+                    float m[12];
+                    memcpy(m, data + offset, 48);
+                    offset += 48;
+                    
+                    // Convert to 4x4
+                    XMFLOAT4X4& mat = kf.boneMatrices[b];
+                    mat._11 = m[0]; mat._12 = m[1]; mat._13 = m[2]; mat._14 = 0;
+                    mat._21 = m[3]; mat._22 = m[4]; mat._23 = m[5]; mat._24 = 0;
+                    mat._31 = m[6]; mat._32 = m[7]; mat._33 = m[8]; mat._34 = 0;
+                    mat._41 = m[9]; mat._42 = m[10]; mat._43 = m[11]; mat._44 = 1;
+                }
+            }
+            else if (isZKEY) {
+                // Quaternion + translation (DIV_INFO format)
+                if (offset + 2 > chunkEnd) return false;
+                uint16_t wPos;
+                memcpy(&wPos, data + offset, 2);
+                kf.frame = wPos;
+                offset += 2;
+                
+                for (uint32_t b = 0; b < anim.boneCount; b++) {
+                    if (offset + 28 > chunkEnd) return false; // quaternion(16) + xyz(12)
+                    
+                    XMFLOAT4 quat;
+                    XMFLOAT3 trans;
+                    memcpy(&quat, data + offset, 16);
+                    offset += 16;
+                    memcpy(&trans, data + offset, 12);
+                    offset += 12;
+                    
+                    // Build matrix from quaternion + translation
+                    XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&quat));
+                    XMMATRIX transMat = XMMatrixTranslation(trans.x, trans.y, trans.z);
+                    XMMATRIX combined = rot * transMat;
+                    XMStoreFloat4x4(&kf.boneMatrices[b], combined);
+                }
+            }
+        }
+    } else {
+        // No keyframes - all frames are keyframes
+        offset -= 4; // Rewind
+        anim.keyFrameCount = anim.frameCount;
+        anim.keyFrames.resize(anim.keyFrameCount);
+        
+        for (uint32_t k = 0; k < anim.keyFrameCount; k++) {
+            anim.keyFrames[k].frame = k;
+            anim.keyFrames[k].boneMatrices.resize(anim.boneCount);
+        }
+        
+        // Read matrices per bone (bone-major order)
+        for (uint32_t b = 0; b < anim.boneCount; b++) {
+            for (uint32_t f = 0; f < anim.frameCount; f++) {
+                if (offset + 64 > chunkEnd) return false;
+                memcpy(&anim.keyFrames[f].boneMatrices[b], data + offset, 64);
+                offset += 64;
+            }
+        }
+    }
+    
+    // Read morph weights
+    if (offset + 4 <= chunkEnd) {
+        anim.morphCount = *reinterpret_cast<const uint32_t*>(data + offset);
+        offset += 4;
+        
+        if (anim.morphCount > 0 && anim.frameCount > 0) {
+            size_t morphSize = anim.morphCount * anim.frameCount * sizeof(float);
+            if (offset + morphSize <= chunkEnd) {
+                anim.morphWeights.resize(anim.morphCount * anim.frameCount);
+                memcpy(anim.morphWeights.data(), data + offset, morphSize);
+            }
+        }
+    }
+    
+    m_animations.push_back(std::move(anim));
+    return true;
+}
+
+bool C3Model::ParsePHYS(const uint8_t* data, size_t offset, size_t chunkSize) {
+    // Same as ParsePHY but can be part of multi-chunk file
+    return ParsePHY(data, offset, chunkSize);
+}
+
+bool C3Model::MergeFromFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        m_error = "Failed to open file: " + path;
+        return false;
+    }
+
+    size_t fileSize = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<uint8_t> data(fileSize);
+    file.read(reinterpret_cast<char*>(data.data()), fileSize);
+    file.close();
+
+    return MergeFromMemory(data);
+}
+
+bool C3Model::MergeFromMemory(const std::vector<uint8_t>& data) {
+    if (data.size() < sizeof(C3FileHeader)) {
+        m_error = "File too small";
+        return false;
+    }
+
+    C3FileHeader header;
+    memcpy(&header, data.data(), sizeof(C3FileHeader));
+
+    if (strncmp(header.magic, "MAXFILE C3", 10) != 0) {
+        m_error = "Invalid C3 file header";
+        return false;
+    }
+
+    // Parse chunks and merge data
+    size_t offset = sizeof(C3FileHeader);
+    bool merged = false;
+    
+    while (offset < data.size() - 8) {
+        char chunkID[4];
+        uint32_t chunkSize;
+        
+        if (offset + 8 > data.size()) break;
+        memcpy(chunkID, data.data() + offset, 4);
+        memcpy(&chunkSize, data.data() + offset + 4, 4);
+        offset += 8;
+        
+        std::string chunkStr(chunkID, 4);
+        bool parsed = false;
+        
+        if (chunkStr == "PHYS" || chunkStr == "PHY " || chunkStr == "PHY3" || chunkStr == "PHY4") {
+            parsed = ParsePHYS(data.data(), offset, chunkSize);
+            merged = true;
+        }
+        else if (chunkStr == "MOTI") {
+            parsed = ParseMOTI(data.data(), offset, chunkSize);
+            merged = true;
+        }
+        else if (chunkStr == "SMOT" || chunkStr == "SHAP") {
+            parsed = ParseSMOT(data.data(), offset, chunkSize);
+            merged = true;
+        }
+        else if (chunkStr == "PTCL") {
+            parsed = ParsePTCL(data.data(), offset, chunkSize);
+            merged = true;
+        }
+        
+        if (parsed) {
+            offset += chunkSize;
+        } else if (chunkSize > 0) {
+            offset += chunkSize;
+        } else {
+            break;
+        }
+    }
+    
+    if (merged) {
+        CalculateBounds();
+    }
+    
+    return merged;
+}
+
+void C3Model::SetAnimationFrame(uint32_t animIndex, uint32_t frame) {
+    if (animIndex < m_animations.size()) {
+        m_currentAnimIndex = animIndex;
+        m_currentFrame = frame % m_animations[animIndex].frameCount;
+    }
+}
+
+void C3Model::GetBoneMatrix(uint32_t boneIndex, uint32_t animIndex, uint32_t frame, XMFLOAT4X4& outMatrix) {
+    // Initialize to identity matrix
+    XMStoreFloat4x4(&outMatrix, XMMatrixIdentity());
+    
+    if (animIndex >= m_animations.size()) return;
+    if (boneIndex >= m_animations[animIndex].boneCount) return;
+    
+    const Animation& anim = m_animations[animIndex];
+    frame = frame % anim.frameCount;
+    
+    // Find surrounding keyframes
+    size_t startIdx = anim.keyFrames.size(), endIdx = anim.keyFrames.size();
+    for (size_t i = 0; i < anim.keyFrames.size(); i++) {
+        if (anim.keyFrames[i].frame <= frame) {
+            if (startIdx == anim.keyFrames.size() || i > startIdx) startIdx = i;
+        }
+        if (anim.keyFrames[i].frame > frame) {
+            if (endIdx == anim.keyFrames.size() || i < endIdx) endIdx = i;
+        }
+    }
+    
+    if (startIdx == anim.keyFrames.size() && endIdx != anim.keyFrames.size()) {
+        outMatrix = anim.keyFrames[endIdx].boneMatrices[boneIndex];
+    }
+    else if (startIdx != anim.keyFrames.size() && endIdx == anim.keyFrames.size()) {
+        outMatrix = anim.keyFrames[startIdx].boneMatrices[boneIndex];
+    }
+    else if (startIdx != anim.keyFrames.size() && endIdx != anim.keyFrames.size()) {
+        // Interpolate matrices manually (XMMatrixLerp doesn't exist)
+        const XMFLOAT4X4& m1 = anim.keyFrames[startIdx].boneMatrices[boneIndex];
+        const XMFLOAT4X4& m2 = anim.keyFrames[endIdx].boneMatrices[boneIndex];
+        uint32_t f1 = anim.keyFrames[startIdx].frame;
+        uint32_t f2 = anim.keyFrames[endIdx].frame;
+        
+        float t = (f2 > f1) ? (float)(frame - f1) / (float)(f2 - f1) : 0.0f;
+        
+        // Manual matrix interpolation (component-wise lerp)
+        XMFLOAT4X4 result;
+        for (int i = 0; i < 16; i++) {
+            float* r = reinterpret_cast<float*>(&result);
+            const float* a = reinterpret_cast<const float*>(&m1);
+            const float* b = reinterpret_cast<const float*>(&m2);
+            r[i] = a[i] + (b[i] - a[i]) * t;
+        }
+        outMatrix = result;
+    }
+}
+
+void C3Model::InterpolateKeyFrames(const Animation& anim, uint32_t frame, std::vector<XMFLOAT4X4>& outMatrices) {
+    outMatrices.resize(anim.boneCount);
+    for (uint32_t b = 0; b < anim.boneCount; b++) {
+        GetBoneMatrix(b, 0, frame, outMatrices[b]);
+    }
 }
 
 void C3Model::CalculateBounds() {

@@ -1,6 +1,13 @@
 #include "GLTFToC3.h"
+#include "../Core/C3Model.h"
+#include "../Core/C3Types.h"
 #include <fstream>
 #include <filesystem>
+#include <cstring>
+#include <DirectXMath.h>
+
+using namespace DirectX;
+using json = nlohmann::json;
 
 bool GLTFToC3::Import(const std::string& path, C3Model& outModel, const ImportOptions& options) {
     // Parse glTF JSON
@@ -96,7 +103,7 @@ bool GLTFToC3::Import(const std::string& path, C3Model& outModel, const ImportOp
         v.positions[0] = positions[i];
 
         // Morph targets (add deltas to base)
-        for (int t = 0; t < 3 && t < morphTargets.size(); t++) {
+        for (int t = 0; t < 3 && static_cast<size_t>(t) < morphTargets.size(); t++) {
             v.positions[t + 1] = XMFLOAT3{
                 positions[i].x + morphTargets[t][i].x,
                 positions[i].y + morphTargets[t][i].y,
@@ -127,10 +134,9 @@ bool GLTFToC3::Import(const std::string& path, C3Model& outModel, const ImportOp
 
     part.normalIndices = indices;
 
-    // Note: This creates an in-memory model, not a .c3 file
-    // To write .c3, you'd need a C3Writer class
-
-    m_lastError = "Import successful (in-memory only, .c3 writing not implemented)";
+    // Add mesh to model (using non-const version)
+    outModel.GetMeshes().push_back(part);
+    
     return true;
 }
 

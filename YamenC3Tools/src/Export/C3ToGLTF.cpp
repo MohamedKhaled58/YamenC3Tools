@@ -1,8 +1,13 @@
 #include "C3ToGLTF.h"
+#include "../Core/C3Model.h"
+#include "../Core/C3Types.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <algorithm>
+#include <DirectXMath.h>
+#include <cmath>
 
+using namespace DirectX;
 using json = nlohmann::json;
 
 size_t C3ToGLTF::BufferData::WriteFloat3(const XMFLOAT3& v) {
@@ -280,8 +285,13 @@ bool C3ToGLTF::Export(const C3Model& model, const ExportOptions& options) {
         });
     gltf["scene"] = 0;
 
+    // Determine output paths
+    std::filesystem::path outputPath(options.outputPath);
+    std::string basePath = outputPath.parent_path().string() + "/" + outputPath.stem().string();
+    std::string binPath = basePath + ".bin";
+    std::string gltfPath = basePath + ".gltf";
+
     // Write binary file
-    std::string binPath = options.outputPath + ".bin";
     std::ofstream binFile(binPath, std::ios::binary);
     if (!binFile) {
         m_lastError = "Failed to create .bin file";
@@ -291,11 +301,11 @@ bool C3ToGLTF::Export(const C3Model& model, const ExportOptions& options) {
     binFile.close();
 
     // Write glTF JSON
+    std::string binFilename = std::filesystem::path(binPath).filename().string();
     gltf["buffers"] = json::array({
-        {{"byteLength", bufferData.data.size()}, {"uri", binPath.substr(binPath.find_last_of("/\\") + 1)}}
+        {{"byteLength", bufferData.data.size()}, {"uri", binFilename}}
         });
 
-    std::string gltfPath = options.outputPath + ".gltf";
     std::ofstream gltfFile(gltfPath);
     if (!gltfFile) {
         m_lastError = "Failed to create .gltf file";
